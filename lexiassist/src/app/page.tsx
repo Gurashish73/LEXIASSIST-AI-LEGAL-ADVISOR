@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import IpBox from "./ip";
 
 const initialCards = [
@@ -44,6 +44,16 @@ const initialCards = [
 
 export default function Home() {
   const [moved, setMoved] = useState<number[]>([]);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const update = () => setIsMobile(window.innerWidth < 640);
+
+    update();
+    window.addEventListener("resize", update);
+
+    return () => window.removeEventListener("resize", update);
+  }, []);
 
   const reveal = moved.length === initialCards.length;
 
@@ -68,43 +78,46 @@ export default function Home() {
       />
 
       {/* Top Left */}
-      <div className="absolute left-10 top-10 z-50">
-        <h1 className="text-4xl font-light tracking-[0.35em]">
+      <div className="absolute left-4 top-4 z-50 sm:left-6 sm:top-6 lg:left-10 lg:top-10">
+        <h1 className="text-2xl font-light tracking-[0.22em] sm:text-3xl sm:tracking-[0.3em] lg:text-4xl lg:tracking-[0.35em]">
           LEXIASSIST
         </h1>
 
-        <p className="mt-3 text-sm tracking-[0.2em] uppercase text-zinc-500">
+        <p className="mt-2 text-[10px] uppercase tracking-[0.2em] text-zinc-500 sm:text-xs">
           AI Legal Advisor
         </p>
       </div>
 
-      {/* Bottom Left */}
-      <div className="absolute bottom-10 left-10 text-zinc-500">
-        <p className="text-xs tracking-[0.25em] uppercase">
-          Every case hides something.
-        </p>
-
-        <p className="mt-2 text-sm">
-          Move every file.
-          <br />
-          Find the truth.
-        </p>
-        <IpBox/>
-      </div>
-
       {/* Counter */}
-      <div className="absolute right-10 top-10 text-right text-zinc-500">
-        <p className="text-xs uppercase tracking-[0.3em]">
+      <div className="absolute right-4 top-4 z-50 text-right text-zinc-500 sm:right-6 sm:top-6 lg:right-10 lg:top-10">
+        <p className="text-[10px] uppercase tracking-[0.25em] sm:text-xs">
           Evidence moved
         </p>
 
-        <p className="mt-2 text-3xl font-light">
+        <p className="mt-1 text-xl font-light sm:text-2xl lg:mt-2 lg:text-3xl">
           {moved.length}/{initialCards.length}
         </p>
       </div>
 
+      {/* Bottom Left */}
+      <div className="absolute bottom-4 left-4 z-50 max-w-[220px] text-zinc-500 sm:bottom-6 sm:left-6 lg:bottom-10 lg:left-10">
+        <p className="text-[10px] uppercase tracking-[0.22em] sm:text-xs">
+          Every case hides something.
+        </p>
+
+        <p className="mt-2 text-xs sm:text-sm">
+          Move every file.
+          <br />
+          Find the truth.
+        </p>
+
+        <div className="mt-3">
+          <IpBox />
+        </div>
+      </div>
+
       {/* Truth */}
-      <div className="absolute inset-0 flex items-center justify-center">
+      <div className="absolute inset-0 flex items-center justify-center px-4">
         <motion.div
           initial={{ opacity: 0 }}
           animate={{
@@ -114,7 +127,7 @@ export default function Home() {
           transition={{ duration: 1 }}
           className="text-center"
         >
-          <h2 className="select-none text-7xl font-thin tracking-[0.6em] text-white">
+          <h2 className="select-none text-4xl font-thin tracking-[0.25em] text-white sm:text-6xl sm:tracking-[0.45em] lg:text-7xl lg:tracking-[0.6em]">
             TRUTH
           </h2>
 
@@ -124,7 +137,7 @@ export default function Home() {
               y: reveal ? 0 : 20,
             }}
             transition={{ delay: 0.6 }}
-            className="mt-8 text-zinc-400"
+            className="mx-auto mt-6 max-w-md px-4 text-sm text-zinc-400 sm:text-base"
           >
             Every legal story begins by uncovering what was hidden.
           </motion.p>
@@ -133,10 +146,8 @@ export default function Home() {
             <motion.button
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              whileHover={{
-                scale: 1.05,
-              }}
-              className="mt-10 rounded-full border border-zinc-700 px-8 py-3 text-sm uppercase tracking-[0.3em] transition hover:border-zinc-300 hover:bg-white hover:text-black"
+              whileHover={{ scale: 1.05 }}
+              className="mt-8 rounded-full border border-zinc-700 px-6 py-3 text-xs uppercase tracking-[0.25em] transition hover:border-zinc-300 hover:bg-white hover:text-black sm:mt-10 sm:px-8 sm:text-sm"
             >
               IN DEVELOPMENT NOW
             </motion.button>
@@ -153,8 +164,8 @@ export default function Home() {
           dragElastic={0.12}
           onDragStart={() => markMoved(card.id)}
           initial={{
-            x: card.x,
-            y: card.y,
+            x: isMobile ? card.x * 0.55 : card.x,
+            y: isMobile ? card.y * 0.55 : card.y,
             rotate: card.rot,
           }}
           whileDrag={{
@@ -163,15 +174,15 @@ export default function Home() {
             cursor: "grabbing",
             zIndex: 999,
           }}
-          className="absolute left-1/2 top-1/2 h-44 w-72 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md border border-zinc-800 bg-[#151515]/90 p-5 backdrop-blur-sm shadow-2xl"
+          className="absolute left-1/2 top-1/2 h-36 w-56 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md border border-zinc-800 bg-[#151515]/90 p-4 shadow-2xl backdrop-blur-sm sm:h-40 sm:w-64 sm:p-5 lg:h-44 lg:w-72"
         >
           <div className="flex h-full flex-col justify-between">
             <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-zinc-500">
+              <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 sm:text-xs">
                 Confidential
               </p>
 
-              <h3 className="mt-3 text-lg tracking-wide">
+              <h3 className="mt-3 text-base tracking-wide sm:text-lg">
                 {card.title}
               </h3>
             </div>
@@ -186,10 +197,9 @@ export default function Home() {
       ))}
 
       {/* Footer */}
-      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 text-xs tracking-[0.35em] uppercase text-zinc-700">
+      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-4 text-center text-[10px] uppercase tracking-[0.25em] text-zinc-700 sm:bottom-4 sm:text-xs lg:bottom-8">
         Nothing is ever hidden forever.
       </div>
-      
     </main>
   );
 }
