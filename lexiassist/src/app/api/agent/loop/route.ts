@@ -50,7 +50,7 @@ export async function POST(req: Request) {
 
     // 5. Invoke Gemini LLM for single-step reasoning using AI SDK Core
     const result = await generateText({
-      model: google('gemini-1.5-pro'),
+      model: google("gemini-2.5-pro"),
       messages: trackingMessages,
       tools: legalTools,
     });
