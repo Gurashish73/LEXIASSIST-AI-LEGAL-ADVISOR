@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useState } from "react";
-import IPLol from "./ip";
+import IpBox from "./ip";
 
 const initialCards = [
   {
@@ -89,7 +89,7 @@ export default function Home() {
           <br />
           Find the truth.
         </p>
-        <IPLol/>
+        <IpBox/>
       </div>
 
       {/* Counter */}
