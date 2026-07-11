@@ -29,7 +29,8 @@ model User {
   
   // Relations
   lawyerProfile LawyerProfile?
-  clientCases   CaseBrief[]     @relation("ClientCases")
+  clientCases    CaseBrief[]    @relation("ClientCases")
+  agentSessions  AgentSession[] @relation("ClientSessions") // <-- NEW
   
   @@index([email])
   @@index([role])
@@ -75,6 +76,7 @@ model CaseBrief {
   
   // Relations
   consultations  Consultation[]
+  agentSessions  AgentSession[] @relation("CaseSessions")
 
   // Indexes correctly placed for Case queries
   @@index([clientId])
@@ -99,15 +101,18 @@ model Consultation {
 }
 
 model AgentSession {
-  id        String   @id @default(uuid())
-  clientId  String   // Ties to the User
-  status    String   @default("PROCESSING") // Can be PROCESSING, COMPLETED, or FAILED
-  content   String?  @db.Text // Where the final AI response goes
-  metadata  Json?    // Stores what step the AI is on
-  messages  Json?    // for conversation history
+  id          String     @id @default(uuid())
+  clientId    String     // Ties to the User model id
+  user        User       @relation("ClientSessions", fields: [clientId], references: [id], onDelete: Cascade)
+  caseBriefId String?  
+  caseBrief   CaseBrief? @relation("CaseSessions", fields: [caseBriefId], references: [id], onDelete: SetNull)
+  status      String     @default("PROCESSING") // Can be PROCESSING, COMPLETED, or FAILED
+  content     String?    @db.Text // Where the final AI response goes
+  metadata    Json?      // Stores what step the AI is on
+  messages    Json?      // for conversation history
   
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 
   @@index([clientId])
   @@index([status])
