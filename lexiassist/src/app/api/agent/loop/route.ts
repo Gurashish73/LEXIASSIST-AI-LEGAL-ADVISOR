@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { Receiver } from '@upstash/qstash';
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
+import Pusher from 'pusher';
+import { prisma } from '@/lib/prisma'; // Global Prisma singleton
 import { buildLegalAgenticSystemPrompt } from '@/lib/ai/prompts/agent-prompt';
 import { legalTools } from '@/lib/schemas/tools/legal-schemas';
 
@@ -11,11 +13,21 @@ const receiver = new Receiver({
   nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
 });
 
+const pusher = new Pusher({
+  appId: process.env.PUSHER_APP_ID!,
+  key: process.env.NEXT_PUBLIC_PUSHER_KEY!,
+  secret: process.env.PUSHER_SECRET!,
+  cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+  useTLS: true,
+});
+
 export const maxDuration = 60; 
 
 export async function POST(req: Request) {
+  // Extract sessionId early so the catch block can update the DB if an error occurs
+  let activeSessionId = '';
+
   try {
-    // 1. Enforce Zero-Trust Signature Verification
     const signature = req.headers.get('upstash-signature');
     const rawBody = await req.text();
     
@@ -24,22 +36,30 @@ export async function POST(req: Request) {
       body: rawBody,
     }).catch(() => false);
 
-    if (!isValid) {
-      return new Response('Unauthorized Webhook Signature', { status: 401 });
-    }
+    if (!isValid) return new Response('Unauthorized Webhook Signature', { status: 401 });
 
-    // 2. Parse Stateless Payload
     const payload = JSON.parse(rawBody);
     const { sessionId, clientId, messages, currentStep, metadata } = payload;
+    activeSessionId = sessionId;
     
-    // 3. Circuit Breaker Mechanism
+    // 1. Circuit Breaker
     const MAX_STEPS = 5;
     if (currentStep >= MAX_STEPS) {
       console.warn(`[LOOP] Circuit breaker activated for Session: ${sessionId}`);
+      
+      await prisma.agentSession.update({
+        where: { id: sessionId },
+        data: { status: 'FAILED', content: 'Agent exceeded maximum execution steps.' }
+      });
+      
+      await pusher.trigger(`session-${sessionId}`, 'agent:completed', {
+        sessionId, status: 'FAILED', content: 'System safety limits reached.'
+      });
+
       return new Response('Max step safety ceiling hit', { status: 200 });
     }
 
-    // 4. Generate the Immutable System Instruction
+    // 2. Build the System Prompt
     const systemInstruction = buildLegalAgenticSystemPrompt();
     const dynamicSystemInstruction = `
 ${systemInstruction}
@@ -55,7 +75,7 @@ You must use these exact system values to populate tool parameters when executin
 The user has requested a "legal risk assessment". You MUST execute the 'generatePreBriefRisk' tool to fulfill this request. Do not attempt to summarize or assess risks in your final text response without first invoking the 'generatePreBriefRisk' tool to generate the structural data.
 `;
 
-    // 5. Invoke Gemini LLM
+    // 3. Invoke Gemini LLM
     const result = await generateText({
       model: google('gemini-2.5-flash'),
       system: dynamicSystemInstruction,
@@ -66,14 +86,11 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
     const { finishReason, toolCalls, text } = result;
     let updatedMessages = [...messages];
 
-
-   // 6. Handle Tool Call State Persistence (Parallel Support)
+    // 4. Handle Tool Call Persistence (Parallel Batching Support)
     if (toolCalls && toolCalls.length > 0) {
       const toolCallParts = toolCalls.map((tool: any) => {
         const toolArgs = tool.args ?? tool.input;
-        if (!toolArgs) {
-          throw new Error(`Tool ${tool.toolName} returned no arguments.`);
-        }
+        if (!toolArgs) throw new Error(`Tool ${tool.toolName} returned no arguments.`);
         return {
           type: 'tool-call',
           toolCallId: tool.toolCallId,
@@ -82,29 +99,15 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
         };
       });
 
-      // Persist ALL tool calls in a single assistant message
-      updatedMessages.push({
-        role: 'assistant',
-        content: toolCallParts,
-      });
+      updatedMessages.push({ role: 'assistant', content: toolCallParts });
     }
 
-    // 7. Hardened Dynamic Host Resolution
     const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
     const forwardedProto = req.headers.get('x-forwarded-proto');
-    
-    let protocol = 'https://';
-    if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
-      protocol = 'http://';
-    } else if (forwardedProto) {
-      protocol = `${forwardedProto}://`;
-    }
+    let protocol = host && (host.includes('localhost') || host.includes('127.0.0.1')) ? 'http://' : (forwardedProto ? `${forwardedProto}://` : 'https://');
+    const currentAppUrl = host ? `${protocol}${host}` : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
 
-    const currentAppUrl = host 
-      ? `${protocol}${host}` 
-      : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
-
-    // 8. The Routing Fork: Dispatch vs. Stop (Parallel Support)
+    // 5. The Routing Fork
     if (finishReason === 'tool-calls' || (toolCalls && toolCalls.length > 0)) {
       
       const mappedToolCalls = toolCalls.map((tool: any) => ({
@@ -113,6 +116,7 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
         args: tool.args ?? tool.input,
       }));
 
+      // Hot Network Loop: Dispatch back to QStash WITHOUT hitting the database
       const dispatch = await fetch(`https://qstash.upstash.io/v2/publish/${currentAppUrl}/api/agent/execute-tool`, {
         method: 'POST',
         headers: {
@@ -124,41 +128,68 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
           sessionId,
           clientId,
           messages: updatedMessages,
-          toolCalls: mappedToolCalls, // Passing the array instead of a single object
+          toolCalls: mappedToolCalls,
           currentStep: currentStep + 1,
           metadata,
         }),
       });
 
-      console.log(`[LOOP] Dispatched ${mappedToolCalls.length} tool calls in batch (Status ${dispatch.status})`);
+      console.log(`[LOOP] Dispatched batch to worker (Status ${dispatch.status})`);
       return new Response('Transitioning to Action state', { status: 200 });
-      
       
     } else if (finishReason === 'stop') {
       
-      const clientSafeText = text.replace(/<scratchpad>[\s\S]*?<\/scratchpad>/g, '').trim();
-      console.log(`[LOOP] Execution complete. Session: ${sessionId}`);
+      // 6. Terminal State: Append the raw text to history to preserve scratchpad context for future turns
+      updatedMessages.push({ role: 'assistant', content: text });
       
-      return NextResponse.json({
-        status: 'success',
+      const clientSafeText = text.replace(/<scratchpad>[\s\S]*?<\/scratchpad>/g, '').trim();
+      console.log(`[LOOP] Execution complete. Saving to DB. Session: ${sessionId}`);
+      
+      // 7. Terminal Database Write
+      await prisma.agentSession.update({
+        where: { id: sessionId },
+        data: {
+          status: 'COMPLETED',
+          content: clientSafeText,
+          messages: updatedMessages, // Save the complete conversational state
+        }
+      });
+
+      // 8. Blast the final payload to the frontend via WebSockets
+      const finalPayload = {
         sessionId,
+        status: 'COMPLETED',
         content: clientSafeText,
         metadata: {
           step: currentStep,
           timestamp: new Date().toISOString()
         }
-      }, { status: 200 });
+      };
+
+      await pusher.trigger(`session-${sessionId}`, 'agent:completed', finalPayload)
+        .catch(e => console.error("[PUSHER ERROR]", e));
+
+      return NextResponse.json({ status: 'success' }, { status: 200 });
       
     } else {
-      console.warn(`[LOOP] Unexpected finishReason encountered: ${finishReason}`);
-      return new Response('Execution interrupted by model constraints', { status: 200 });
+      return new Response('Execution interrupted', { status: 200 });
     }
 
   } catch (error: any) {
-    console.error('[LOOP_ERROR] Core orchestration failure:', error);
-    return NextResponse.json(
-      { error: error?.message ?? 'Internal loop engine failure' },
-      { status: 500 }
-    );
+    console.error('[LOOP_ERROR]:', error);
+    
+    // Safety Net: Mark session as failed in DB if the loop crashes entirely
+    if (activeSessionId) {
+      await prisma.agentSession.update({
+        where: { id: activeSessionId },
+        data: { status: 'FAILED' }
+      }).catch(e => console.error('Failed to update session failure status:', e));
+      
+      await pusher.trigger(`session-${activeSessionId}`, 'agent:completed', {
+        sessionId: activeSessionId, status: 'FAILED'
+      }).catch(e => {});
+    }
+
+    return NextResponse.json({ error: error?.message }, { status: 500 });
   }
 }
