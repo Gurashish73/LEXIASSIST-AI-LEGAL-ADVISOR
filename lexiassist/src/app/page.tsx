@@ -1,235 +1,335 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
-import IpBox from "./ip";
+import { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
-const initialCards = [
-  {
-    id: 1,
-    title: "CONTRACT.pdf",
-    x: -180,
-    y: -120,
-    rot: -8,
-  },
-  {
-    id: 2,
-    title: "EMAIL.msg",
-    x: 170,
-    y: -100,
-    rot: 6,
-  },
-  {
-    id: 3,
-    title: "EVIDENCE.zip",
-    x: -160,
-    y: 90,
-    rot: 4,
-  },
-  {
-    id: 4,
-    title: "NOTES.txt",
-    x: 160,
-    y: 110,
-    rot: -6,
-  },
-  {
-    id: 5,
-    title: "STATEMENT.doc",
-    x: 0,
-    y: 0,
-    rot: 2,
-  },
-];
+export default function ClientDashboard() {
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<{ id: string; role: string; content: string }[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [isPdfAttached, setIsPdfAttached] = useState(false);
 
-export default function Home() {
-  const [moved, setMoved] = useState<number[]>([]);
-  const [scale, setScale] = useState(1);
+  // --- REFS FOR UI BEHAVIOR ---
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Auto-scroll to the newest message
   useEffect(() => {
-    const updateScale = () => {
-      const width = window.innerWidth;
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-      if (width < 640) {
-        setScale(0.45);
-      } else if (width < 1024) {
-        setScale(0.7);
-      } else {
-        setScale(1);
+  // Auto-expand the textarea up to a maximum height
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`;
+    }
+  }, [input]);
+
+  // --- POLLING LOGIC ---
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+
+    const checkAgentStatus = async () => {
+      if (!activeSessionId) return;
+
+      try {
+        const response = await fetch(`/api/agent/status?sessionId=${activeSessionId}`);
+        const data = await response.json();
+
+        if (data.status === "COMPLETED") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: "assistant",
+              content: data.content || "Processing complete. No text output returned.",
+            },
+          ]);
+          setIsLoading(false);
+          setActiveSessionId(null);
+        } else if (data.status === "FAILED") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: "assistant",
+              content: "[System Error]: The orchestration engine encountered a critical failure during execution.",
+            },
+          ]);
+          setIsLoading(false);
+          setActiveSessionId(null);
+        }
+      } catch (error) {
+        console.error("Error polling agent status:", error);
       }
     };
 
-    updateScale();
+    if (activeSessionId) {
+      intervalId = setInterval(checkAgentStatus, 3000);
+    }
 
-    window.addEventListener("resize", updateScale);
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [activeSessionId]);
 
-    return () => window.removeEventListener("resize", updateScale);
-  }, []);
+  // --- CORE SUBMISSION LOGIC ---
+  const submitMessage = async (text: string) => {
+    if (!text.trim() || isLoading) return;
 
-  const reveal = moved.length === initialCards.length;
+    const userMsg = { id: Date.now().toString(), role: "user", content: text };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setIsLoading(true);
 
-  const markMoved = (id: number) => {
-    setMoved((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    try {
+      const response = await fetch("/api/agent/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: text,
+          clientId: "550e8400-e29b-41d4-a716-446655440000",
+          hasPdf: isPdfAttached,
+          metadata: {},
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.status === 202) {
+        setActiveSessionId(data.sessionId);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: `[System]: Intake queued successfully (Session ${data.sessionId.slice(0, 15)}...). Analyzing the request.`,
+          },
+        ]);
+      } else {
+        setIsLoading(false);
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now().toString(), role: "assistant", content: `[System Error]: ${data.error || "Payload rejected by validation."}` },
+        ]);
+      }
+    } catch (error) {
+      setIsLoading(false);
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), role: "assistant", content: "[System Error]: Network Error. Could not reach the backend." },
+      ]);
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    submitMessage(input);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitMessage(input);
+    }
   };
 
   return (
-    <main className="relative min-h-screen w-full overflow-hidden bg-[#0b0b0b] text-zinc-200">
-      {/* Background */}
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,#222_0%,#111_45%,#080808_100%)]" />
+    <main className="relative h-screen w-full overflow-hidden bg-[#08080a] text-zinc-200 font-sans flex flex-col selection:bg-zinc-800">
+      
+      {/* Top Navigation Bar */}
+      <header className="relative z-20 flex items-center justify-between border-b border-zinc-800/40 bg-[#08080a]/80 px-6 py-4 backdrop-blur-md">
+        <div className="flex items-center gap-4">
+          <h1 className="text-lg font-medium tracking-[0.15em] text-zinc-100 uppercase">LEXIASSIST</h1>
+          <span className="rounded-full bg-emerald-950/30 px-2.5 py-0.5 text-[10px] font-mono tracking-widest text-emerald-500 border border-emerald-900/30">
+            ENCRYPTED CLIENT INTAKE
+          </span>
+        </div>
+      </header>
 
-      {/* Grain */}
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.05]"
-        style={{
-          backgroundImage:
-            "url('https://www.transparenttextures.com/patterns/asfalt-dark.png')",
-        }}
-      />
-
-      {/* Logo */}
-      <div className="absolute left-4 top-4 z-50 sm:left-6 sm:top-6 lg:left-10 lg:top-10">
-        <h1 className="text-2xl font-light tracking-[0.22em] sm:text-3xl sm:tracking-[0.3em] lg:text-4xl lg:tracking-[0.35em]">
-          LEXIASSIST
-        </h1>
-
-        <p className="mt-2 text-[10px] uppercase tracking-[0.2em] text-zinc-500 sm:text-xs">
-          AI Legal Advisor
-        </p>
-      </div>
-
-      {/* Counter */}
-      <div className="absolute right-4 top-4 z-50 text-right text-zinc-500 sm:right-6 sm:top-6 lg:right-10 lg:top-10">
-        <p className="text-[10px] uppercase tracking-[0.25em] sm:text-xs">
-          Evidence moved
-        </p>
-
-        <p className="mt-1 text-lg font-light sm:text-2xl lg:mt-2 lg:text-3xl">
-          {moved.length}/{initialCards.length}
-        </p>
-      </div>
-
-      {/* Hero */}
-      <div className="absolute inset-0 flex items-center justify-center px-4">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{
-            opacity: reveal ? 1 : 0.08,
-            scale: reveal ? 1 : 0.92,
-          }}
-          transition={{ duration: 1 }}
-          className="text-center"
-        >
-          <h2 className="select-none text-4xl font-thin tracking-[0.25em] text-white sm:text-6xl sm:tracking-[0.45em] lg:text-7xl lg:tracking-[0.6em]">
-            TRUTH
-          </h2>
-
-          <motion.p
-            animate={{
-              opacity: reveal ? 1 : 0,
-              y: reveal ? 0 : 20,
-            }}
-            transition={{ delay: 0.6 }}
-            className="mx-auto mt-6 max-w-md px-4 text-sm text-zinc-400 sm:text-base"
-          >
-            Every legal story begins by uncovering what was hidden.
-          </motion.p>
-
-          {reveal && (
-            <motion.button
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              whileHover={{ scale: 1.05 }}
-              className="mt-8 rounded-full border border-zinc-700 px-6 py-3 text-xs uppercase tracking-[0.25em] transition hover:border-zinc-300 hover:bg-white hover:text-black sm:mt-10 sm:px-8 sm:text-sm"
+      {/* Main Workspace */}
+      <div className="relative z-10 flex flex-1 overflow-hidden p-4 sm:p-6 gap-6">
+        
+        {/* LEFT PANE: Document Canvas */}
+        <AnimatePresence initial={false}>
+          {isPdfAttached && (
+            <motion.div
+              initial={{ width: 0, opacity: 0, scale: 0.98 }}
+              animate={{ width: "50%", opacity: 1, scale: 1 }}
+              exit={{ width: 0, opacity: 0, scale: 0.98 }}
+              transition={{ type: "spring", bounce: 0, duration: 0.5 }}
+              className="hidden lg:flex flex-col h-full rounded-2xl border border-zinc-800/60 bg-[#0c0c0e] shadow-2xl overflow-hidden"
             >
-              IN DEVELOPMENT NOW
-            </motion.button>
+              <div className="border-b border-zinc-800/60 bg-zinc-900/30 p-4 flex justify-between items-center">
+                <span className="text-[10px] font-mono tracking-widest text-zinc-500 uppercase">Document Canvas</span>
+                <span className="text-[10px] font-mono text-zinc-500">contract_draft.pdf</span>
+              </div>
+              
+              {/* Refined Canvas Area - Minimalist Dot Grid */}
+              <div className="flex-1 relative overflow-y-auto flex items-center justify-center">
+                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-size-[24px_24px] pointer-events-none" />
+                 
+                 <div className="relative z-10 text-center space-y-6">
+                    <div className="relative inline-flex h-16 w-16 items-center justify-center">
+                        {/* Slow ping animation for 'alive' feel */}
+                        <div className="absolute inset-0 rounded-full bg-emerald-500/20 animate-ping opacity-20" style={{ animationDuration: '3s' }} />
+                        <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-zinc-900 border border-zinc-700/50 shadow-xl">
+                            <svg className="h-6 w-6 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                        </div>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-zinc-200 tracking-wide">Document Ready for Analysis</p>
+                      <p className="text-xs text-zinc-500 mt-2 font-mono">LexiAssist is standing by to extract data.</p>
+                    </div>
+                 </div>
+              </div>
+            </motion.div>
           )}
-        </motion.div>
-      </div>
+        </AnimatePresence>
 
-      {/* Cards */}
-      {initialCards.map((card) => (
+        {/* RIGHT PANE: Chat Assistant */}
         <motion.div
-          key={card.id}
-          drag
-          dragMomentum={false}
-          dragElastic={0.12}
-          onDragStart={() => markMoved(card.id)}
-          initial={{
-            x: card.x * scale,
-            y: card.y * scale,
-            rotate: card.rot,
-          }}
-          whileDrag={{
-            scale: 1.06,
-            rotate: 0,
-            cursor: "grabbing",
-            zIndex: 999,
-          }}
-          className="
-            absolute
-            left-1/2
-            top-1/2
-            h-36
-            w-56
-            -translate-x-1/2
-            -translate-y-1/2
-            cursor-grab
-            rounded-md
-            border
-            border-zinc-800
-            bg-[#151515]/90
-            p-4
-            shadow-2xl
-            backdrop-blur-sm
-            sm:h-40
-            sm:w-64
-            sm:p-5
-            lg:h-44
-            lg:w-72
-          "
+          layout
+          transition={{ type: "spring", bounce: 0, duration: 0.5 }}
+          className={`flex flex-col h-full rounded-2xl border border-zinc-800/60 bg-[#0c0c0e]/80 backdrop-blur-xl shadow-2xl overflow-hidden ${
+            isPdfAttached ? "w-full lg:w-1/2" : "w-full max-w-4xl mx-auto"
+          }`}
         >
-          <div className="flex h-full flex-col justify-between">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 sm:text-xs">
-                Confidential
-              </p>
-
-              <h3 className="mt-3 text-base tracking-wide sm:text-lg">
-                {card.title}
-              </h3>
-            </div>
-
-            <div className="space-y-2">
-              <div className="h-px w-full bg-zinc-800" />
-              <div className="h-px w-5/6 bg-zinc-800" />
-              <div className="h-px w-4/6 bg-zinc-800" />
+          {/* Header Panel */}
+          <div className="border-b border-zinc-800/60 p-4 bg-zinc-900/20 flex justify-between items-center shrink-0">
+            <span className="text-[10px] font-mono tracking-widest text-zinc-500 uppercase">
+              // Active_Triage_Session
+            </span>
+            <div className="flex items-center gap-2">
+              <span className={`h-1.5 w-1.5 rounded-full ${isLoading ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
+              <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-wider">{isLoading ? "Processing" : "System Ready"}</span>
             </div>
           </div>
+
+          {/* Active Conversational Feed */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-zinc-800">
+            
+            {/* EMPTY STATE */}
+            {messages.length === 0 && (
+              <div className="h-full flex flex-col items-center justify-center p-4 max-w-lg mx-auto w-full">
+                <div className="h-14 w-14 border border-zinc-800 bg-zinc-900/50 rounded-2xl flex items-center justify-center mb-6 shadow-lg">
+                   <span className="text-2xl">⚖️</span>
+                </div>
+                <p className="font-mono text-xs uppercase tracking-widest text-zinc-300 mb-2">Initialize Triage</p>
+                <p className="text-sm text-zinc-500 text-center mb-10 leading-relaxed">Describe your legal issue or select a template below to begin automated structure mapping and risk assessment.</p>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
+                  {[
+                    "Review this employment contract for unfair non-compete clauses.",
+                    "Draft a legally binding Non-Disclosure Agreement (NDA).",
+                    "Analyze this eviction notice and check tenant rights.",
+                    "Extract a chronological timeline from these case files."
+                  ].map((prompt, i) => (
+                    <button
+                      key={i}
+                      onClick={() => submitMessage(prompt)}
+                      className="text-left p-4 rounded-xl border border-zinc-800/60 bg-zinc-900/20 hover:bg-zinc-800/40 hover:border-zinc-700 transition-all text-xs text-zinc-400 hover:text-zinc-200 leading-relaxed"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <AnimatePresence>
+              {messages.map((m) => {
+                const isSystemMessage = m.content.startsWith("[System") || m.content.startsWith("[System Error]");
+                
+                // Separate styling for system logs vs conversational responses
+                if (isSystemMessage) {
+                  return (
+                    <motion.div key={m.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-center w-full my-2">
+                      <div className="flex items-center gap-2 px-4 py-2 bg-zinc-900/40 border border-zinc-800/60 rounded-full text-[10px] font-mono text-zinc-500">
+                        <span className={`h-1.5 w-1.5 rounded-full ${m.content.includes("Error") ? "bg-rose-500/80" : "bg-emerald-500/50 animate-pulse"}`} />
+                        {m.content.replace(/\[System\]:\s*|\[System Error\]:\s*/, '')}
+                      </div>
+                    </motion.div>
+                  );
+                }
+
+                // Standard conversational bubbles
+                return (
+                  <motion.div
+                    key={m.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`flex w-full ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                  >
+                    <div 
+                      className={`max-w-[85%] sm:max-w-[75%] wrap-break-word p-5 font-sans text-[14px] leading-relaxed shadow-sm transition-all
+                      ${m.role === "user" 
+                        ? "bg-zinc-800/60 rounded-2xl rounded-tr-sm text-zinc-100" 
+                        : "bg-transparent border border-zinc-800/40 rounded-2xl rounded-tl-sm text-zinc-300"
+                      }`}
+                    >
+                      <p className="text-[9px] font-mono tracking-widest text-zinc-500 uppercase mb-3">
+                        {m.role === "user" ? "Client" : "LexiAssist"}
+                      </p>
+                      <div className="whitespace-pre-wrap">{m.content}</div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
+            
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Unified Text Entry Port */}
+          <div className="p-4 sm:p-6 pt-2 bg-[#0a0a0c] shrink-0">
+            {isPdfAttached && (
+              <div className="mb-3 px-2 text-[10px] text-emerald-500 font-mono flex items-center gap-2">
+                <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500/20 text-[8px]">✓</span>
+                contract_draft.pdf attached
+              </div>
+            )}
+            
+            <form onSubmit={handleSubmit} className="relative flex items-end gap-2 bg-zinc-900/30 border border-zinc-800/60 rounded-2xl p-2 transition-all focus-within:border-zinc-700/80 focus-within:bg-zinc-900/50">
+              
+              <button
+                type="button"
+                onClick={() => setIsPdfAttached(!isPdfAttached)}
+                title="Toggle Document Canvas"
+                className={`shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors ${isPdfAttached ? 'bg-emerald-500/10 text-emerald-400' : 'bg-transparent text-zinc-400 hover:bg-zinc-800/80'}`}
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                </svg>
+              </button>
+              
+              <textarea
+                ref={textareaRef}
+                className="flex-1 bg-transparent py-3 px-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none resize-none overflow-y-auto min-h-11"
+                rows={1}
+                value={input}
+                placeholder="Detail your legal situation..."
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={isLoading}
+              />
+              
+              <button
+                type="submit"
+                disabled={isLoading || !input.trim()}
+                className="shrink-0 h-11 w-11 flex items-center justify-center bg-zinc-100 hover:bg-white text-zinc-900 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                </svg>
+              </button>
+            </form>
+          </div>
         </motion.div>
-      ))}
-
-      {/* Bottom Left */}
-      <div className="absolute bottom-4 left-4 z-50 max-w-xs text-zinc-500 sm:bottom-6 sm:left-6 sm:max-w-sm lg:bottom-10 lg:left-10">
-        <p className="text-[10px] uppercase tracking-[0.22em] sm:text-xs">
-          Every case hides something.
-        </p>
-
-        <p className="mt-2 text-xs sm:text-sm">
-          Move every file.
-          <br />
-          Find the truth.
-        </p>
-      </div>
-
-      {/* Bottom Right */}
-      <div className="absolute bottom-4 right-4 z-50 sm:bottom-6 sm:right-6 lg:bottom-10 lg:right-10">
-        <IpBox />
-      </div>
-
-      {/* Footer */}
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-4 text-center text-[10px] uppercase tracking-[0.25em] text-zinc-700 sm:bottom-4 sm:text-xs lg:bottom-8">
-        Nothing is ever hidden forever.
       </div>
     </main>
   );

@@ -1,3 +1,4 @@
+// src/app/api/agent/status/route.ts
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
