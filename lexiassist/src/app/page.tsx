@@ -90,7 +90,7 @@ export default function ClientDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: text,
-          clientId: "550e8400-e29b-41d4-a716-446655440000",
+          clientId: "2c1f0468-f428-48e5-9550-8e135fb43c12",
           hasPdf: isPdfAttached,
           metadata: {},
         }),
