@@ -7,7 +7,7 @@ import Pusher from 'pusher';
 import { prisma } from '@/lib/prisma'; // Global Prisma singleton
 import { buildLegalAgenticSystemPrompt } from '@/lib/ai/prompts/agent-prompt';
 import { legalTools } from '@/lib/schemas/tools/legal-schemas';
-import { prisma } from '@/lib/prisma'; //Prisma Client
+
 
 const receiver = new Receiver({
   currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
