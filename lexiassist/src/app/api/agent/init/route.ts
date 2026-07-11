@@ -10,6 +10,7 @@ const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
 const InitRequestSchema = z.object({
   prompt: z.string().min(1, "Prompt cannot be empty"),
   clientId: z.string().uuid("Invalid Client ID"),
+  sessionId: z.string().uuid("Invalid Session ID").optional(), // Pass this to continue a chat
   fileUrl: z.string().url("Invalid File URL").optional(),
   hasPdf: z.boolean().default(false),
   metadata: z.object({
@@ -32,33 +33,71 @@ export async function POST(req: Request) {
       );
     }
 
-    const { prompt, clientId, fileUrl, hasPdf, metadata } = parsedData.data;
+    const { prompt, clientId, sessionId: incomingSessionId, fileUrl, hasPdf, metadata } = parsedData.data;
 
-    const session = await prisma.agentSession.create({
-      data: {
-        clientId: clientId,
-        status: "PROCESSING",
+    // 3. Format the new user message
+    const newUserMessage = {
+      role: 'user',
+      content: hasPdf && fileUrl 
+        ? `${prompt}\n\n[Attached File URL: ${fileUrl}]` 
+        : prompt,
+    };
+
+    let activeSessionId = incomingSessionId;
+    let messagesHistory: any[] = [];
+
+    // 4. State Rehydration & DB Operations
+    if (activeSessionId) {
+      // CONTINUATION: Fetch existing session and append
+      const existingSession = await prisma.agentSession.findUnique({
+        where: { id: activeSessionId },
+      });
+
+      if (!existingSession) {
+        return NextResponse.json({ error: 'Session not found' }, { status: 404 });
       }
-    });
-    const sessionId = session.id; 
 
-    // 3. Construct Queue Payload
+      // Parse existing messages (default to empty array if null)
+      messagesHistory = existingSession.messages 
+        ? (existingSession.messages as any[]) 
+        : [];
+      
+      messagesHistory.push(newUserMessage);
+
+      // Lock the session back to PROCESSING mode
+      await prisma.agentSession.update({
+        where: { id: activeSessionId },
+        data: { 
+          status: 'PROCESSING',
+          messages: messagesHistory, // Update DB before network dispatch
+        }
+      });
+
+    } else {
+      // NEW SESSION: Create record with the first message
+      messagesHistory = [newUserMessage];
+      
+      const newSession = await prisma.agentSession.create({
+        data: {
+          clientId,
+          status: 'PROCESSING',
+          messages: messagesHistory,
+          metadata: metadata as any,
+        }
+      });
+      activeSessionId = newSession.id;
+    }
+
+    // 5. Construct Queue Payload for the Hot Network Loop
     const queuePayload = {
-      sessionId,
+      sessionId: activeSessionId,
       clientId,
       currentStep: 0,
       metadata,
-      messages: [
-        {
-          role: 'user',
-          content: hasPdf && fileUrl 
-            ? `${prompt}\n\n[Attached File URL: ${fileUrl}]` 
-            : prompt,
-        }
-      ],
+      messages: messagesHistory, // Full context passed to Gemini
     };
 
-    // 4. Hardened Dynamic Host Resolution
+    // 6. Hardened Dynamic Host Resolution
     const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
     const forwardedProto = req.headers.get('x-forwarded-proto');
     
@@ -73,16 +112,16 @@ export async function POST(req: Request) {
       ? `${protocol}${host}` 
       : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
 
-    // 5. Routing Fork: PDF Pre-Processing vs Standard Loop
+    // 7. Routing Fork: PDF Pre-Processing vs Standard Loop
     if (hasPdf && fileUrl) {
-      console.log(`[INIT] File detected. Dispatching Session ${sessionId} to PDF Parser.`);
+      console.log(`[INIT] File detected. Dispatching Session ${activeSessionId} to PDF Parser.`);
       await qstashClient.publishJSON({
         url: `${currentAppUrl}/api/agent/parse-pdf`,
         body: queuePayload,
         retries: 3,
       });
     } else {
-      console.log(`[INIT] Text-only request. Dispatching Session ${sessionId} to Orchestration Loop.`);
+      console.log(`[INIT] Text-only request. Dispatching Session ${activeSessionId} to Orchestration Loop.`);
       await qstashClient.publishJSON({
         url: `${currentAppUrl}/api/agent/loop`,
         body: queuePayload,
@@ -90,11 +129,11 @@ export async function POST(req: Request) {
       });
     }
 
-    // 6. Asynchronous 202 Release
+    // 8. Asynchronous 202 Release
     return NextResponse.json(
       { 
         message: 'Legal intake process accepted and queued.', 
-        sessionId 
+        sessionId: activeSessionId 
       },
       { status: 202 } 
     );
