@@ -1,6 +1,6 @@
 // src/app/dashboard/@caselist/page.tsx
 import Link from "next/link";
-import { prisma } from "@/lib/prisma"; // Adjust this import path if needed
+import { prisma } from "@/lib/prisma";
 
 export default async function CaseListSlot() {
   // Fetch live CaseBriefs and join the User (client) data
@@ -39,7 +39,7 @@ export default async function CaseListSlot() {
           
           return (
             <Link 
-              href={`/case/${c.id}`} // <-- DYNAMIC ROUTING LINK
+              href={`/case/${c.id}`} 
               key={c.id} 
               className="group flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border border-zinc-800/50 bg-zinc-900/10 hover:bg-zinc-900/40 hover:border-zinc-700/80 transition-all cursor-pointer"
             >
