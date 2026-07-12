@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link"; // <-- Added Next.js Link
 
 //TYPEWRITER COMPONENT
 function TypewriterText({ text }: { text: string }) {
@@ -322,16 +323,16 @@ export default function ClientDashboard() {
             
             <form onSubmit={handleSubmit} className="relative flex items-end gap-2 bg-zinc-900/30 border border-zinc-800/60 rounded-2xl p-2 transition-all focus-within:border-zinc-700/80 focus-within:bg-zinc-900/50">
               
-              <button
-                type="button"
-                onClick={() => setIsPdfAttached(!isPdfAttached)}
-                title="Toggle Document Canvas"
+              {/* THIS IS THE UPDATED BUTTON -> NOW A NEXT.JS LINK */}
+              <Link
+                href="/client/upload"
+                title="Upload Document"
                 className={`shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors ${isPdfAttached ? 'bg-emerald-500/10 text-emerald-400' : 'bg-transparent text-zinc-400 hover:bg-zinc-800/80'}`}
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                 </svg>
-              </button>
+              </Link>
               
               <textarea
                 ref={textareaRef}
