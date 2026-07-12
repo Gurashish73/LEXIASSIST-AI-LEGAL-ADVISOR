@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { NextResponse } from 'next/server';
 import { Client } from '@upstash/qstash';
 import { z } from 'zod';
-import {getBaseUrl} from "@/lib/tools/actions/getBaseurl"
+import { getBaseUrl } from "@/lib/tools/actions/getBaseurl"
 
 const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
 
@@ -12,6 +12,7 @@ const InitRequestSchema = z.object({
   prompt: z.string().min(1, "Prompt cannot be empty"),
   clientId: z.string().uuid("Invalid Client ID"),
   sessionId: z.string().uuid("Invalid Session ID").optional(), // Pass this to continue a chat
+  caseBriefId: z.string().uuid("Invalid Case Brief ID").optional(),
   fileUrl: z.string().url("Invalid File URL").optional(),
   hasPdf: z.boolean().default(false),
   metadata: z.object({
@@ -24,7 +25,7 @@ const InitRequestSchema = z.object({
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    
+
     // 2. Validate Incoming Payload
     const parsedData = InitRequestSchema.safeParse(body);
     if (!parsedData.success) {
@@ -39,8 +40,8 @@ export async function POST(req: Request) {
     // 3. Format the new user message
     const newUserMessage = {
       role: 'user',
-      content: hasPdf && fileUrl 
-        ? `${prompt}\n\n[Attached File URL: ${fileUrl}]` 
+      content: hasPdf && fileUrl
+        ? `${prompt}\n\n[Attached File URL: ${fileUrl}]`
         : prompt,
     };
 
@@ -58,17 +59,24 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Session not found' }, { status: 404 });
       }
 
+      if (existingSession.status === 'PROCESSING') {
+        return NextResponse.json(
+          { error: 'Session is currently processing a previous turn. Please wait for a response.' },
+          { status: 409 }
+        );
+      }
+
       // Parse existing messages (default to empty array if null)
-      messagesHistory = existingSession.messages 
-        ? (existingSession.messages as any[]) 
+      messagesHistory = existingSession.messages
+        ? (existingSession.messages as any[])
         : [];
-      
+
       messagesHistory.push(newUserMessage);
 
       // Lock the session back to PROCESSING mode
       await prisma.agentSession.update({
         where: { id: activeSessionId },
-        data: { 
+        data: {
           status: 'PROCESSING',
           messages: messagesHistory, // Update DB before network dispatch
         }
@@ -77,13 +85,23 @@ export async function POST(req: Request) {
     } else {
       // NEW SESSION: Create record with the first message
       messagesHistory = [newUserMessage];
-      
+
+      // If caseBriefId was supplied, verify it actually belongs to this client
+      // before linking — never trust a client-supplied ID blindly.
+      if (parsedData.data.caseBriefId) {
+        const brief = await prisma.caseBrief.findUnique({ where: { id: parsedData.data.caseBriefId } });
+        if (!brief || brief.clientId !== clientId) {
+          return NextResponse.json({ error: 'Case not found or does not belong to this client' }, { status: 404 });
+        }
+      }
+
       const newSession = await prisma.agentSession.create({
         data: {
           clientId,
           status: 'PROCESSING',
           messages: messagesHistory,
           metadata: metadata as any,
+          caseBriefId: parsedData.data.caseBriefId ?? null
         }
       });
       activeSessionId = newSession.id;
@@ -99,7 +117,7 @@ export async function POST(req: Request) {
     };
 
     // 6. Hardened Dynamic Host Resolution
-   const currentAppUrl = getBaseUrl(req);
+    const currentAppUrl = getBaseUrl(req);
 
     // 7. Routing Fork: PDF Pre-Processing vs Standard Loop
     if (hasPdf && fileUrl) {
@@ -120,11 +138,11 @@ export async function POST(req: Request) {
 
     // 8. Asynchronous 202 Release
     return NextResponse.json(
-      { 
-        message: 'Legal intake process accepted and queued.', 
-        sessionId: activeSessionId 
+      {
+        message: 'Legal intake process accepted and queued.',
+        sessionId: activeSessionId
       },
-      { status: 202 } 
+      { status: 202 }
     );
 
   } catch (error: any) {

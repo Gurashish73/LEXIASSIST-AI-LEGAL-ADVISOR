@@ -107,6 +107,7 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
     let protocol = host && (host.includes('localhost') || host.includes('127.0.0.1')) ? 'http://' : (forwardedProto ? `${forwardedProto}://` : 'https://');
     const currentAppUrl = host ? `${protocol}${host}` : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
 
+
     // 5. The Routing Fork
     if (finishReason === 'tool-calls' || (toolCalls && toolCalls.length > 0)) {
       
