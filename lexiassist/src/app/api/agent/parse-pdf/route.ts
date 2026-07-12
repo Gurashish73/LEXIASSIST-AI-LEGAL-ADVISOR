@@ -2,8 +2,10 @@
 import { NextResponse } from 'next/server';
 import { Receiver, Client } from '@upstash/qstash';
 import { extractText, getDocumentProxy } from 'unpdf';
+import { generateText } from 'ai';
+import { google } from '@ai-sdk/google';
 import { z } from 'zod';
-import { prisma } from '@/lib/prisma';
+import { prisma } from '@/lib/prisma'; // Using your established DB singleton
 import { getBaseUrl } from '@/lib/tools/actions/getBaseurl';
 
 const receiver = new Receiver({
@@ -13,17 +15,16 @@ const receiver = new Receiver({
 
 const qstashClient = new Client({ token: process.env.QSTASH_TOKEN! });
 
-// 1. Strict payload contract — mirrors what init actually sends
 const ParsePdfPayloadSchema = z.object({
   sessionId: z.string().uuid(),
   clientId: z.string().uuid(),
   currentStep: z.number().int(),
-  metadata: z.record(z.any(),z.any()),
-  messages: z.array(z.any()), // full history up to and including the user's message with the file URL
+  metadata: z.record(z.string(),z.any()),
+  messages: z.array(z.any()), 
 });
 
-const MAX_PDF_BYTES = 15 * 1024 * 1024; // 15MB — tune to your plan's limits
-const MAX_EXTRACTED_CHARS = 100_000; // guardrail against dumping a 400-page PDF straight into context
+const MAX_PDF_BYTES = 15 * 1024 * 1024; // 15MB
+const MAX_EXTRACTED_CHARS = 100_000; 
 
 export const maxDuration = 60;
 
@@ -31,7 +32,6 @@ export async function POST(req: Request) {
   let activeSessionId = '';
 
   try {
-    // 2. Signature verification — identical pattern to loop/execute-tool
     const signature = req.headers.get('upstash-signature');
     const rawBody = await req.text();
     const isValid = await receiver.verify({ signature: signature || '', body: rawBody }).catch(() => false);
@@ -46,8 +46,6 @@ export async function POST(req: Request) {
     const { sessionId, clientId, currentStep, metadata, messages } = parsed.data;
     activeSessionId = sessionId;
 
-    // 3. Locate the file URL — it's embedded in the last user message by init's
-    //    current convention: `${prompt}\n\n[Attached File URL: ${fileUrl}]`
     const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user');
     const urlMatch = lastUserMessage?.content?.match(/\[Attached File URL: (.+?)\]/);
     const fileUrl = urlMatch?.[1];
@@ -56,19 +54,19 @@ export async function POST(req: Request) {
       throw new Error('No file URL found in message history — parse-pdf was dispatched without an attachment.');
     }
 
-    // 4. SECURITY: only fetch from your own UploadThing domain — never
-    //    fetch an arbitrary user-supplied URL server-side (SSRF risk)
-    const allowedHost = 'utfs.io'; // or your app's UploadThing subdomain, e.g. *.ufs.sh
+    // SECURITY: Validate both legacy and modern UploadThing domains
+    const allowedHosts = ['utfs.io', '.ufs.sh'];
     const parsedUrl = new URL(fileUrl);
-    if (!parsedUrl.hostname.endsWith(allowedHost)) {
+    const isTrustedHost = allowedHosts.some(host => 
+      parsedUrl.hostname === host || parsedUrl.hostname.endsWith(host)
+    );
+
+    if (!isTrustedHost) {
       throw new Error(`Rejected file URL from untrusted host: ${parsedUrl.hostname}`);
     }
 
-    // 5. Fetch the file with a size cap enforced via streaming, not after-the-fact
     const fileRes = await fetch(fileUrl);
-    if (!fileRes.ok) {
-      throw new Error(`Failed to fetch PDF from storage: ${fileRes.status}`);
-    }
+    if (!fileRes.ok) throw new Error(`Failed to fetch PDF from storage: ${fileRes.status}`);
 
     const contentLength = Number(fileRes.headers.get('content-length') ?? 0);
     if (contentLength > MAX_PDF_BYTES) {
@@ -77,48 +75,64 @@ export async function POST(req: Request) {
 
     const arrayBuffer = await fileRes.arrayBuffer();
 
-    // 6. Extract text
-    let extractedText: string;
+    // 6. Try native text-layer extraction first
+    let extractedText = '';
+    let extractionMethod: 'text-layer' | 'vision-ocr' = 'text-layer';
+
     try {
       const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer));
       const { text } = await extractText(pdf, { mergePages: true });
-      extractedText = text.trim();
-    } catch (extractionError: any) {
-      // Common cause: scanned/image-only PDF with no embedded text layer.
-      // This is a distinct, expected failure mode — not a system crash.
-      throw new Error(
-        `PDF text extraction failed — likely a scanned/image-only document with no text layer. (${extractionError.message})`
-      );
+      extractedText = text.replace(/\s+/g, ' ').trim(); // Normalize whitespace
+    } catch {
+      extractedText = ''; 
+    }
+
+    // 7. Vision OCR Fallback
+    if (extractedText.length < 50) {
+      console.log(`[PARSE-PDF] Text layer insufficient (${extractedText.length} chars) — falling back to vision OCR.`);
+      extractionMethod = 'vision-ocr';
+
+      const base64Pdf = Buffer.from(arrayBuffer).toString('base64');
+
+      const visionResult = await generateText({
+        model: google('gemini-2.5-flash'),
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'file', data: base64Pdf, mediaType: 'application/pdf' },
+              { type: 'text', text: 'Transcribe ALL readable text from this document, in reading order, exactly as it appears. Do not summarize, interpret, or omit anything. If a section is illegible, write [ILLEGIBLE] in its place. Output only the transcribed text, nothing else.' },
+            ],
+          },
+        ],
+      });
+
+      extractedText = visionResult.text.replace(/\s+/g, ' ').trim();
     }
 
     if (!extractedText || extractedText.length < 20) {
-      throw new Error('PDF contained no meaningfully extractable text (possibly scanned or empty).');
+      throw new Error('Document contained no extractable text via text-layer parsing or vision OCR — likely blank, corrupted, or entirely illegible.');
     }
 
-    // 7. Truncate defensively — never let one document blow the context budget
+    // 8. Truncate defensively
     const truncated = extractedText.length > MAX_EXTRACTED_CHARS;
     const finalText = truncated
       ? extractedText.slice(0, MAX_EXTRACTED_CHARS) + '\n\n[TRUNCATED — document exceeded processing limit]'
       : extractedText;
 
-    // 8. Inject as a new message, clearly demarcated so the model treats it
-    //    as document content, not conversational narrative
+    // 9. Inject as a new message with source context
     const documentMessage = {
       role: 'user',
-      content: `[DOCUMENT CONTENT extracted from uploaded PDF — treat as source material, not client narrative:]\n\n${finalText}`,
+      content: `[DOCUMENT CONTENT extracted from uploaded PDF via ${extractionMethod === 'vision-ocr' ? 'AI vision transcription (scanned document — may contain transcription errors)' : 'native text layer'}:]\n\n${finalText}`,
     };
 
     const updatedMessages = [...messages, documentMessage];
 
-    // 9. Persist before dispatching forward — same "DB write before network
-    //    hop" discipline as the rest of the pipeline
     await prisma.agentSession.update({
       where: { id: sessionId },
       data: { messages: updatedMessages },
     });
 
-    // 10. Hand off to the normal orchestration loop — from here it's
-    //     indistinguishable from a text-only session
     const currentAppUrl = getBaseUrl(req);
     await qstashClient.publishJSON({
       url: `${currentAppUrl}/api/agent/loop`,
@@ -126,13 +140,12 @@ export async function POST(req: Request) {
       retries: 3,
     });
 
-    console.log(`[PARSE-PDF] Extracted ${finalText.length} chars for session ${sessionId}. Dispatched to loop.`);
+    console.log(`[PARSE-PDF] Extracted ${finalText.length} chars via ${extractionMethod} for session ${sessionId}. Dispatched to loop.`);
     return new Response('PDF parsed, transitioning to orchestration loop', { status: 200 });
 
   } catch (error: any) {
     console.error('[PARSE-PDF ERROR]:', error);
 
-    // Fail the session cleanly rather than leaving it stuck in PROCESSING forever
     if (activeSessionId) {
       await prisma.agentSession.update({
         where: { id: activeSessionId },
