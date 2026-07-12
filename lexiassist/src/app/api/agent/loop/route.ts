@@ -145,6 +145,15 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
       
       const clientSafeText = text.replace(/<scratchpad>[\s\S]*?<\/scratchpad>/g, '').trim();
       console.log(`[LOOP] Execution complete. Saving to DB. Session: ${sessionId}`);
+
+           // Pull the last tool-result from this turn, if any, so the frontend
+     // gets structured data alongside the prose — e.g. lawyer candidates
+     // to render as selectable cards, not something to parse out of text.
+     const lastToolResult = updatedMessages
+       .slice()
+       .reverse()
+       .find((m: any) => m.role === 'tool')
+       ?.content?.[0]?.output?.value;
       
       // 7. Terminal Database Write
       await prisma.agentSession.update({
@@ -161,6 +170,7 @@ The user has requested a "legal risk assessment". You MUST execute the 'generate
         sessionId,
         status: 'COMPLETED',
         content: clientSafeText,
+        structuredData: lastToolResult ?? null, // { matchFound, matches: [...] } when relevant
         metadata: {
           step: currentStep,
           timestamp: new Date().toISOString()

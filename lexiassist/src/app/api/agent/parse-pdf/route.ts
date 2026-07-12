@@ -114,16 +114,42 @@ export async function POST(req: Request) {
       throw new Error('Document contained no extractable text via text-layer parsing or vision OCR — likely blank, corrupted, or entirely illegible.');
     }
 
-    // 8. Truncate defensively
+  // 8. Truncate defensively
     const truncated = extractedText.length > MAX_EXTRACTED_CHARS;
     const finalText = truncated
       ? extractedText.slice(0, MAX_EXTRACTED_CHARS) + '\n\n[TRUNCATED — document exceeded processing limit]'
       : extractedText;
 
-    // 9. Inject as a new message with source context
+    // --- NEW LOGIC: Eager Document Creation ---
+    const session = await prisma.agentSession.findUnique({
+      where: { id: sessionId },
+      select: { caseBriefId: true },
+    });
+
+    if (!session) {
+      throw new Error(`AgentSession ${sessionId} not found during PDF processing.`);
+    }
+
+    if (!session.caseBriefId) {
+      throw new Error(`AgentSession ${sessionId} has no caseBriefId — strict eager case creation failed upstream.`);
+    }
+
+    // Persist the Document row pointing to the guaranteed CaseBrief
+    const doc = await prisma.document.create({
+      data: {
+        caseBriefId: session.caseBriefId,
+        fileUrl,
+        extractedText: finalText,
+      },
+    });
+    
+    const documentId = doc.id;
+    // ------------------------------------------
+
+    // 9. Inject as a new message with the dynamic documentId explicitly mapped
     const documentMessage = {
       role: 'user',
-      content: `[DOCUMENT CONTENT extracted from uploaded PDF via ${extractionMethod === 'vision-ocr' ? 'AI vision transcription (scanned document — may contain transcription errors)' : 'native text layer'}:]\n\n${finalText}`,
+      content: `[DOCUMENT CONTENT extracted from uploaded PDF via ${extractionMethod === 'vision-ocr' ? 'AI vision transcription (scanned document — may contain transcription errors)' : 'native text layer'}, documentId: ${documentId}:]\n\n${finalText}`,
     };
 
     const updatedMessages = [...messages, documentMessage];
