@@ -123,7 +123,7 @@ model Document {
   id            String     @id @default(uuid())
   caseBriefId   String
   caseBrief     CaseBrief  @relation(fields: [caseBriefId], references: [id], onDelete: Cascade)
-  fileUrl       String
+  fileUrl       String      @unique
   extractedText String     @db.Text
   redlines      Json?      // populated by generateDocumentRedlines
   createdAt     DateTime   @default(now())

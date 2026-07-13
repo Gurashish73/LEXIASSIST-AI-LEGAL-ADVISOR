@@ -74,13 +74,15 @@ export async function POST(req: Request) {
     }
 
     const arrayBuffer = await fileRes.arrayBuffer();
+    // NEW: Immediately clone it into a Node Buffer before unpdf touches it
+    const pdfBuffer = Buffer.from(arrayBuffer);
 
     // 6. Try native text-layer extraction first
     let extractedText = '';
     let extractionMethod: 'text-layer' | 'vision-ocr' = 'text-layer';
 
     try {
-      const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer));
+      const pdf = await getDocumentProxy(new Uint8Array(pdfBuffer));
       const { text } = await extractText(pdf, { mergePages: true });
       extractedText = text.replace(/\s+/g, ' ').trim(); // Normalize whitespace
     } catch {
@@ -92,8 +94,7 @@ export async function POST(req: Request) {
       console.log(`[PARSE-PDF] Text layer insufficient (${extractedText.length} chars) — falling back to vision OCR.`);
       extractionMethod = 'vision-ocr';
 
-      const base64Pdf = Buffer.from(arrayBuffer).toString('base64');
-
+      const base64Pdf = pdfBuffer.toString('base64');
       const visionResult = await generateText({
         model: google('gemini-2.5-flash'),
         messages: [
@@ -134,14 +135,21 @@ export async function POST(req: Request) {
       throw new Error(`AgentSession ${sessionId} has no caseBriefId — strict eager case creation failed upstream.`);
     }
 
-    // Persist the Document row pointing to the guaranteed CaseBrief
-    const doc = await prisma.document.create({
-      data: {
+    const doc = await prisma.document.upsert({
+      where: { 
+        fileUrl: fileUrl 
+      },
+      update: { 
+        extractedText: finalText 
+      },
+      create: {
         caseBriefId: session.caseBriefId,
-        fileUrl,
+        fileUrl: fileUrl,
         extractedText: finalText,
       },
     });
+    
+   
     
     const documentId = doc.id;
     // ------------------------------------------
